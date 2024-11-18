@@ -1,0 +1,200 @@
+Backend / app.py
+
+from fastapi import FastAPI, UploadFile, HTTPException
+from utils import extract_text, generate_update, semantic_search
+import os
+
+app = FastAPI()
+
+@app.post("/upload-document/")
+async def upload_document(file: UploadFile):
+    try:
+        # Save file locally
+        file_path = f"data/input_docs/{file.filename}"
+        with open(file_path, "wb") as f:
+            f.write(await file.read())
+
+        # Extract text from document
+        extracted_text = extract_text(file_path)
+        return {"message": "File uploaded and processed successfully!", "extracted_text": extracted_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/update-document/")
+async def update_document(document_text: str):
+    try:
+        updated_text = generate_update(document_text)
+        return {"message": "Document updated successfully!", "updated_text": updated_text}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/search/")
+async def search_documents(query: str):
+    try:
+        results = semantic_search(query)
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+backend / utils.py
+
+import openai
+from azure.ai.formrecognizer import DocumentAnalysisClient
+from azure.core.credentials import AzureKeyCredential
+from azure.search.documents import SearchClient
+import os
+
+# Load environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
+# Azure and OpenAI configuration
+form_recognizer_endpoint = os.getenv("FORM_RECOGNIZER_ENDPOINT")
+form_recognizer_key = os.getenv("FORM_RECOGNIZER_KEY")
+openai_endpoint = os.getenv("OPENAI_ENDPOINT")
+openai_key = os.getenv("OPENAI_KEY")
+search_endpoint = os.getenv("SEARCH_ENDPOINT")
+search_key = os.getenv("SEARCH_KEY")
+search_index_name = os.getenv("SEARCH_INDEX_NAME")
+
+# Extract text using Form Recognizer
+def extract_text(file_path: str) -> str:
+    client = DocumentAnalysisClient(form_recognizer_endpoint, AzureKeyCredential(form_recognizer_key))
+    with open(file_path, "rb") as f:
+        poller = client.begin_analyze_document("prebuilt-document", f)
+    result = poller.result()
+    extracted_text = " ".join([line.content for page in result.pages for line in page.lines])
+    return extracted_text
+
+# Generate updates using OpenAI GPT-4
+def generate_update(document_text: str) -> str:
+    openai.api_key = openai_key
+    openai.api_base = openai_endpoint
+    openai.api_type = "azure"
+    openai.api_version = "2023-03-15-preview"
+
+    response = openai.ChatCompletion.create(
+        engine="gpt-4",
+        messages=[
+            {"role": "system", "content": "You are an AI updating manufacturing manuals."},
+            {"role": "user", "content": f"Update this document: {document_text}"},
+        ],
+    )
+    return response['choices'][0]['message']['content']
+
+# Semantic search using Azure Cognitive Search
+def semantic_search(query: str):
+    client = SearchClient(endpoint=search_endpoint, index_name=search_index_name, credential=AzureKeyCredential(search_key))
+    results = client.search(query)
+    return [{"score": r['@search.score'], "content": r['content']} for r in results]
+
+.env
+
+FORM_RECOGNIZER_ENDPOINT=<your-form-recognizer-endpoint>
+FORM_RECOGNIZER_KEY=<your-form-recognizer-key>
+OPENAI_ENDPOINT=<your-openai-endpoint>
+OPENAI_KEY=<your-openai-key>
+SEARCH_ENDPOINT=<your-search-endpoint>
+SEARCH_KEY=<your-search-key>
+SEARCH_INDEX_NAME=<your-search-index-name>
+
+
+frontend / app.py
+
+import streamlit as st
+import requests
+
+BACKEND_URL = "http://localhost:8000"
+
+st.title("Manufacturing Docs Update Demo")
+
+# File upload
+st.header("Upload Document")
+uploaded_file = st.file_uploader("Choose a file", type=["pdf", "docx"])
+if uploaded_file and st.button("Upload and Extract Text"):
+    response = requests.post(f"{BACKEND_URL}/upload-document/", files={"file": uploaded_file})
+    if response.status_code == 200:
+        st.success("Document uploaded successfully!")
+        extracted_text = response.json()["extracted_text"]
+        st.text_area("Extracted Text", extracted_text, height=200)
+    else:
+        st.error("Error uploading document.")
+
+# Update document
+st.header("Update Document")
+document_text = st.text_area("Enter Document Text")
+if st.button("Generate Update"):
+    response = requests.post(f"{BACKEND_URL}/update-document/", json={"document_text": document_text})
+    if response.status_code == 200:
+        updated_text = response.json()["updated_text"]
+        st.text_area("Updated Text", updated_text, height=200)
+    else:
+        st.error("Error generating update.")
+
+# Semantic search
+st.header("Search Manuals")
+query = st.text_input("Enter Search Query")
+if st.button("Search"):
+    response = requests.get(f"{BACKEND_URL}/search/", params={"query": query})
+    if response.status_code == 200:
+        results = response.json()["results"]
+        for result in results:
+            st.write(f"Score: {result['score']}")
+            st.write(result['content'])
+    else:
+        st.error("Error searching manuals.")
+
+File Structure
+
+manufacturing-docs-update/
+│
+├── backend/
+│   ├── app.py             # FastAPI backend
+│   ├── utils.py           # Helper functions for Azure integrations
+│   └── .env               # Environment variables (keys and endpoints)
+│
+├── frontend/
+│   ├── app.py             # Streamlit app (frontend)
+│
+└── README.md              # Instructions to set up and run the project
+
+
+
+README.md
+
+Setup Instructions:
+	1.	Clone the Repository:
+
+git clone https://github.com/your-repo/manufacturing-docs-update.git
+cd manufacturing-docs-update
+
+
+	2.	Install Python Dependencies:
+
+pip install -r requirements.txt
+
+
+	3.	Set Up Azure Services:
+	•	Azure Form Recognizer: Note the endpoint and key.
+	•	Azure OpenAI: Deploy GPT-4, note the endpoint and key.
+	•	Azure Cognitive Search: Create an index and note the details.
+	4.	Set Environment Variables:
+	•	Fill .env with your Azure credentials.
+	5.	Run the Backend:
+
+cd backend
+uvicorn app:app --reload
+
+
+	6.	Run the Frontend:
+
+cd ../frontend
+streamlit run app.py
+
+
+	7.	Open the App:
+	•	Frontend: http://localhost:8501
+	•	Backend: http://localhost:8000
